@@ -10484,6 +10484,85 @@ void ggml_compute_forward_glu(
     }
 }
 
+
+// ggml_compute_forward_hadamard
+//
+// In-place Walsh-Hadamard transform along the last (contiguous) dimension:
+// y = H_n x, H_n = S_n / sqrt(n), S_n the Sylvester +/-1 matrix (n = 2^k).
+// Butterfly: for len = 2,4,...,n, pairs (j, j+len/2) combine as
+//   a' = a + b,  b' = a - b   (then whole output scaled by 1/sqrt(n)).
+// Works row-wise over all leading dims; src and dst may alias (in-place).
+
+static inline float hadamard_f32_to_f32(float v) { return v; }
+static inline float hadamard_f16_to_f32(ggml_fp16_t v) { return GGML_FP16_TO_FP32(v); }
+static inline ggml_fp16_t hadamard_f32_to_f16(float v) { return GGML_FP32_TO_FP16(v); }
+static inline float hadamard_bf16_to_f32(ggml_bf16_t v) { return GGML_BF16_TO_FP32(v); }
+static inline ggml_bf16_t hadamard_f32_to_bf16(float v) { return GGML_FP32_TO_BF16(v); }
+
+template <typename src_t, typename dst_t, float (*to_f32)(src_t), dst_t (*from_f32)(float)>
+static void ggml_compute_forward_hadamard_impl(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+
+    const ggml_tensor * src0 = dst->src[0];
+
+    GGML_TENSOR_UNARY_OP_LOCALS
+
+    const int64_t n      = ne00;   // last dim of src, power of two
+    const int64_t n_rows = (ne0 == n) ? (ne01 * ne02 * ne03) : (ne01 * ne02 * ne03) / (ne0 / n);
+    GGML_ASSERT(n >= 1 && (n & (n - 1)) == 0);
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    // rows are independent: parallelize over rows
+    for (int64_t row = ith; row < n_rows; row += nth) {
+        const src_t * x = (const src_t *) ((const char *) src0->data + row*nb01);
+        dst_t * y       = (dst_t *)       ((char *) dst->data   + row*nb1);
+
+        // butterfly in a per-thread float scratch buffer
+        float * buf = (float *) params->wdata + (size_t)ith * n;
+        for (int64_t j = 0; j < n; ++j) {
+            buf[j] = to_f32(x[j]);
+        }
+        for (int64_t len = 2; len <= n; len <<= 1) {
+            const int64_t half = len >> 1;
+            for (int64_t blk = 0; blk < n; blk += len) {
+                for (int64_t j = blk; j < blk + half; ++j) {
+                    const float a = buf[j];
+                    const float b = buf[j + half];
+                    buf[j]        = a + b;
+                    buf[j + half] = a - b;
+                }
+            }
+        }
+        const float scale = 1.0f / std::sqrt((float) n);
+        for (int64_t j = 0; j < n; ++j) {
+            y[j] = from_f32(buf[j] * scale);
+        }
+    }
+}
+
+void ggml_compute_forward_hadamard(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+
+    const ggml_tensor * src0 = dst->src[0];
+
+    if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+        ggml_compute_forward_hadamard_impl<float, float,
+            hadamard_f32_to_f32, hadamard_f32_to_f32>(params, dst);
+    } else if (src0->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F16) {
+        ggml_compute_forward_hadamard_impl<ggml_fp16_t, ggml_fp16_t,
+            hadamard_f16_to_f32, hadamard_f32_to_f16>(params, dst);
+    } else if (src0->type == GGML_TYPE_BF16 && dst->type == GGML_TYPE_BF16) {
+        ggml_compute_forward_hadamard_impl<ggml_bf16_t, ggml_bf16_t,
+            hadamard_bf16_to_f32, hadamard_f32_to_bf16>(params, dst);
+    } else {
+        GGML_ABORT("hadamard: unsupported src/dst type combination");
+    }
+}
+
 // ggml_compute_forward_get_rel_pos
 
 static void ggml_compute_forward_get_rel_pos_f16(

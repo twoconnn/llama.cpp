@@ -2066,6 +2066,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_glu(params, tensor);
             } break;
+        case GGML_OP_HADAMARD:
+            {
+                ggml_compute_forward_hadamard(params, tensor);
+            } break;
         case GGML_OP_GET_REL_POS:
             {
                 ggml_compute_forward_get_rel_pos(params, tensor);
@@ -2356,6 +2360,11 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
                     } break;
                 default:
                     GGML_ABORT("fatal error");
+            }
+            break;
+        case GGML_OP_HADAMARD:
+            {
+                n_tasks = n_threads;
             }
             break;
         case GGML_OP_SILU_BACK:
@@ -3038,6 +3047,11 @@ struct ggml_cplan ggml_graph_plan(
                         const int64_t K   = ggml_get_op_params_i32(node, 0);
                         const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
                         cur = per_thread * sizeof(float) * n_tasks;
+                    } break;
+                case GGML_OP_HADAMARD:
+                    {
+                        // per-thread float scratch buffer of the row length
+                        cur = ggml_type_size(GGML_TYPE_F32) * node->src[0]->ne[0] * n_tasks;
                     } break;
                 case GGML_OP_COUNT:
                     {

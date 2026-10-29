@@ -602,6 +602,7 @@ extern "C" {
 
         GGML_OP_GLU,
 
+        GGML_OP_HADAMARD,
         GGML_OP_COUNT,
     };
 
@@ -1338,6 +1339,15 @@ extern "C" {
             struct ggml_tensor  * a);
 
     GGML_API struct ggml_tensor * ggml_geglu_quick_swapped(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a);
+
+
+    // Walsh-Hadamard transform along the last dimension: y = H_n x, where H_n is
+    // the normalized Sylvester Hadamard matrix (n = 2^k). Computed in O(n log n)
+    // without materializing H. QuaRot-style rotation for quantization pipelines.
+    // a: contiguous, last dim must be a power of two; result same shape/type.
+    GGML_API struct ggml_tensor * ggml_hadamard(
             struct ggml_context * ctx,
             struct ggml_tensor  * a);
 

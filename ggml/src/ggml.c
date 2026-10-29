@@ -1108,9 +1108,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "OPT_STEP_SGD",
 
     "GLU",
+    "HADAMARD",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1224,9 +1225,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sgd(x)",
 
     "glu(x)",
+    "hadamard(x)",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3020,6 +3022,27 @@ struct ggml_tensor * ggml_glu_split(
         struct ggml_tensor  * b,
         enum ggml_glu_op      op) {
     return ggml_glu_impl(ctx, a, b, op, false);
+}
+
+
+// ggml_hadamard — Walsh-Hadamard transform along the last dimension.
+// y[i_row, j] = (1/sqrt(n)) * Σ_k s(j,k) * x[i_row, k], s(j,k) = (-1)^(popcount(j&k)).
+// In-place-capable butterfly, O(n log n) per row, no H materialized.
+
+struct ggml_tensor * ggml_hadamard(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a) {
+    GGML_ASSERT(ggml_is_contiguous(a) && "hadamard expects contiguous tensor");
+    const int64_t n = a->ne[0];
+    GGML_ASSERT(n >= 1 && (n & (n - 1)) == 0 && "hadamard: last dim must be a power of two");
+    GGML_ASSERT(a->type == GGML_TYPE_F32 || a->type == GGML_TYPE_F16 || a->type == GGML_TYPE_BF16);
+
+    struct ggml_tensor * result = ggml_new_tensor_impl(ctx, a->type, GGML_MAX_DIMS, a->ne, NULL, 0);
+
+    result->op     = GGML_OP_HADAMARD;
+    result->src[0] = a;
+
+    return result;
 }
 
 // ggml_reglu
@@ -7313,6 +7336,13 @@ static void ggml_compute_backward(
                     GGML_ABORT("unsupported glu op for backward pass: %s", ggml_glu_op_name(ggml_get_glu_op(tensor)));
                 } //break;
             }
+        } break;
+        case GGML_OP_HADAMARD: {
+            // H is its own inverse (orthogonal, symmetric): y = Hx => x = Hy
+            if (src0_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, isrc0, ggml_hadamard(ctx, grad));
+            }
+            GGML_ASSERT(!src1_needs_grads && "hadamard has no src1");
         } break;
         case GGML_OP_NONE: {
             // noop
