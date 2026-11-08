@@ -1,0 +1,58 @@
+#version 450
+
+#include "types.glsl"
+#include "generic_unary_head.glsl"
+
+// GGML_OP_HADAMARD: Walsh-Hadamard transform along the last dimension.
+// One workgroup handles one row of p.ne00 elements (n = 2^k, n <= 8192).
+// Butterfly in shared memory, output scaled by 1/sqrt(n).
+
+const uint num_threads = 512;
+
+layout(local_size_x = num_threads, local_size_y = 1, local_size_z = 1) in;
+
+shared FLOAT_TYPE buf[8192];
+
+void main() {
+    const uint n = p.ne00;
+    // grid: one workgroup per row; row id = y + z*512
+    const uint row = gl_GlobalInvocationID.y + gl_GlobalInvocationID.z * 512;
+    if (row >= (p.ne + n - 1) / n) {
+        return;
+    }
+    const uint base_a = get_aoffset() + row * n;
+    const uint base_d = get_doffset() + row * n;
+
+    // load row (n <= 8192, 256 threads => <= 32 elements per thread)
+#if defined(DATA_A_BF16)
+    for (uint i = gl_LocalInvocationID.x; i < n; i += num_threads) {
+        buf[i] = bf16_to_fp32(uint32_t(data_a[base_a + i]));
+    }
+#else
+    for (uint i = gl_LocalInvocationID.x; i < n; i += num_threads) {
+        buf[i] = FLOAT_TYPE(data_a[base_a + i]);
+    }
+#endif
+    barrier();
+
+    const float scale = inversesqrt(float(n));
+    for (uint len = 2; len <= n; len <<= 1) {
+        const uint hf = len >> 1;
+        // n/2 butterfly pairs per stage, spread over the workgroup
+        for (uint j = gl_LocalInvocationID.x; j < n/2; j += num_threads) {
+            const uint blk = (j / hf) * len;
+            const uint off = j % hf;
+            const uint i0 = blk + off;
+            const uint i1 = i0 + hf;
+            const float a = float(buf[i0]);
+            const float b = float(buf[i1]);
+            buf[i0] = FLOAT_TYPE(a + b);
+            buf[i1] = FLOAT_TYPE(a - b);
+        }
+        barrier();
+    }
+
+    for (uint i = gl_LocalInvocationID.x; i < n; i += num_threads) {
+        data_d[base_d + i] = D_TYPE(float(buf[i]) * scale);
+    }
+}

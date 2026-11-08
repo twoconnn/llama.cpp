@@ -25,6 +25,18 @@ class BailingMoeV3Model(TextModel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # transformers >=5 renames several BailingHybrid config keys via attribute_map;
+        # the converter expects the original HF-repo names
+        renames = {
+            "moe_renormalize": "norm_topk_prob",
+            "num_experts_per_token": "num_experts_per_tok",
+            "num_expert_group": "n_group",
+            "num_shared_experts": "n_shared_experts",
+            "num_experts": "num_local_experts",
+        }
+        for new, old in renames.items():
+            if old not in self.hparams and new in self.hparams:
+                self.hparams[old] = self.hparams[new]
         nextn_layers = self.hparams.get("num_nextn_predict_layers", 0) or 0
         if self.no_mtp:
             nextn_layers = 0
@@ -59,7 +71,7 @@ class BailingMoeV3Model(TextModel):
 
         self.gguf_writer.add_vocab_size(self.hparams["vocab_size"])
         self.gguf_writer.add_ssm_conv_kernel(self.hparams["short_conv_kernel_size"])
-        self.gguf_writer.add_kda_head_dim(self.hparams["head_dim"])
+        self.gguf_writer.add_kda_head_dim(self.hparams.get("linear_head_dim", self.hparams["head_dim"]))
         self.gguf_writer.add_kda_safe_gate(self.hparams["kda_safe_gate"])
         self.gguf_writer.add_kda_gate_lower_bound(self.hparams["kda_lower_bound"])
 

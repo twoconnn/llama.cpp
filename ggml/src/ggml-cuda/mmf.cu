@@ -2,6 +2,54 @@
 #include "mmf.cuh"
 #include "mmid.cuh"
 
+#include <algorithm>
+#include <cmath>
+
+// [qat-act8] per-tensor symmetric int8 fake-quant активаций (эмуляция),
+// capture-safe (CUDA Graphs): без host-sync.
+// Фаза 1: атомарный absmax в device-буфер scratch[0] (обнуляется memset).
+// Фаза 2: roundtrip-кернел читает scale = scratch[0]/127 из device-памяти.
+static __global__ void act8_absmax_kernel(const float * __restrict__ x,
+                                          float * __restrict__ absmax_buf,
+                                          const int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) {
+        return;
+    }
+    const float v = fabsf(x[i]);
+    // atomicMax для неотрицательных float: битовое сравнение
+    int assumed;
+    int old = __float_as_int(absmax_buf[0]);
+    do {
+        assumed = old;
+        old = atomicCAS((int *) absmax_buf, assumed, __float_as_int(fmaxf(v, __int_as_float(assumed))));
+    } while (assumed != old && v > __int_as_float(assumed));
+}
+
+static __global__ void act8_roundtrip_kernel(const float * __restrict__ x,
+                                             float * __restrict__ y,
+                                             const int64_t n,
+                                             const float * __restrict__ absmax_buf) {
+    const float scale = fmaxf(absmax_buf[0] / 127.0f, 1e-8f);
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) {
+        return;
+    }
+    const float v = x[i] / scale;
+    y[i] = nearbyintf(v) * scale;
+}
+
+static void act8_roundtrip_cuda(ggml_backend_cuda_context & ctx, const float * x, float * y, const int64_t n, cudaStream_t stream) {
+    ggml_cuda_pool_alloc<float> scratch(ctx.pool());
+    scratch.alloc(1);
+    CUDA_CHECK(cudaMemsetAsync(scratch.get(), 0, sizeof(float), stream));
+    const int64_t nblocks = (n + 255) / 256;
+    act8_absmax_kernel<<<nblocks, 256, 0, stream>>>(x, scratch.get(), n);
+    CUDA_CHECK(cudaGetLastError());
+    act8_roundtrip_kernel<<<nblocks, 256, 0, stream>>>(x, y, n, scratch.get());
+    CUDA_CHECK(cudaGetLastError());
+}
+
 static __forceinline__ int mmf_get_rows_per_block(const int cc) {
     if (GGML_CUDA_CC_IS_CDNA(cc)) {
         return MMF_ROWS_PER_BLOCK_CDNA;
@@ -29,7 +77,21 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
     GGML_ASSERT(!ids || ids->nb[0] == ggml_type_size(ids->type));
     GGML_ASSERT(        nb0        == ts_dst);
 
-    const float   * src1_d =       (const float   *) src1->data;
+    // [qat-act8] эмуляция 8-бит активаций: если prec_src1 == Q8 (флаг из
+    // GGUF-метаданных PREC_A4 / prec_policy), квантуем src1 per-tensor
+    // symmetric int8 (scale = absmax/127) и деqантуем обратно в F32.
+    // Ошибка квантования остаётся в данных — cublas считает как обычно.
+    // Скорость не растёт, но ppl отражает качество act8-стека.
+    const ggml_prec prec_src1 = (ggml_prec) ggml_get_op_params_i32(dst, 3);
+    ggml_cuda_pool_alloc<float> src1_act8(ctx.pool());
+    const float * src1_use = (const float *) src1->data;
+    if (prec_src1 == GGML_PREC_Q8) {
+        const int64_t n_total = src1->ne[0] * src1->ne[1] * src1->ne[2] * src1->ne[3];
+        src1_act8.alloc(n_total);
+        act8_roundtrip_cuda(ctx, src1_use, src1_act8.get(), n_total, ctx.stream());
+        src1_use = src1_act8.get();
+    }
+    const float   * src1_d = src1_use;
     const int32_t *  ids_d = ids ? (const int32_t *)  ids->data : nullptr;
     float         *  dst_d =       (float         *)  dst->data;
 
@@ -83,7 +145,6 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
         const int sis1 = static_cast<int>(src1->nb[2] / src1->nb[1]);
 
         GGML_ASSERT(sis1 > 0);
-
         ggml_cuda_launch_mm_ids_helper(ids_d, ids_src_compact_dev.get(), ids_dst_compact_dev.get(), expert_bounds_dev.get(),
             static_cast<int>(n_experts), static_cast<int>(n_tokens), static_cast<int>(n_expert_used), static_cast<int>(ne11), si1, sis1, /*write_inverse =*/ false, ctx.stream());
         CUDA_CHECK(cudaGetLastError());

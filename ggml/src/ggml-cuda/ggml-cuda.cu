@@ -1610,7 +1610,10 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
                     beta,   dst_ptr, cu_data_type,   ldc,
                     cu_compute_type,
                     CUBLAS_GEMM_DEFAULT_TENSOR_OP));
-    } else if (r2 == 1 && r3 == 1 && is_src0_cont_2 && is_src1_cont_2) {
+    } else if (r2 == 1 && r3 == 1 && is_src0_cont_2 && is_src1_cont_2 && ne12*ne13 <= 16) {
+        // [fix mm_ids ub>16] cublasGemmStridedBatchedEx fails to launch with
+        // batch > 16 on some driver/GPU combos (CMP 170HX); route larger
+        // batches to cublasGemmBatchedEx below.
         // with a [0, 2, 1, 3] perm. and ne02==1 the matrix strides need to be determined from dim 3:
         const int64_t sma = ne02 == 1 ? s03 : s02;
         const int64_t smb = ne12 == 1 ? s13 : s12;
@@ -2468,6 +2471,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         case GGML_OP_SCALE:
             ggml_cuda_op_scale(ctx, dst);
+            break;
+        case GGML_OP_HADAMARD:
+            ggml_cuda_op_hadamard(ctx, dst);
             break;
         case GGML_OP_SQR:
             ggml_cuda_op_sqr(ctx, dst);
@@ -5985,6 +5991,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_SCALE:
             return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_BF16) && op->type == op->src[0]->type &&
                    ggml_is_contiguous_rows(op->src[0]);
+        case GGML_OP_HADAMARD:
+            return op->type == op->src[0]->type && ggml_is_contiguous(op->src[0]) &&
+                   (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_BF16);
         case GGML_OP_CLAMP:
             return ggml_is_contiguous_rows(op->src[0]);
         case GGML_OP_ADD:

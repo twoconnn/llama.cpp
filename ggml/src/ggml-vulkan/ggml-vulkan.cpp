@@ -3401,6 +3401,10 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 
     ggml_vk_create_pipeline(device, device->pipeline_scale_f32, "scale_f32", scale_f32_len, scale_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
 
+    ggml_vk_create_pipeline(device, device->pipeline_hadamard_f32, "hadamard_f32", hadamard_f32_len, hadamard_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_hadamard_f16, "hadamard_f16", hadamard_f16_len, hadamard_f16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_hadamard_bf16, "hadamard_bf16", hadamard_bf16_len, hadamard_bf16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
+
     ggml_vk_create_pipeline(device, device->pipeline_log[0], "log_f32", log_f32_len, log_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_log[1], "log_f16", log_f16_len, log_f16_data, "main", 2, sizeof(vk_op_unary_push_constants), {512, 1, 1}, {}, 1);
 
@@ -8890,6 +8894,20 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             return ctx->device->pipeline_scale_f32;
         }
         return nullptr;
+    case GGML_OP_HADAMARD:
+        if (src0->type == dst->type) {
+            switch (src0->type) {
+                case GGML_TYPE_F32:
+                    return ctx->device->pipeline_hadamard_f32;
+                case GGML_TYPE_F16:
+                    return ctx->device->pipeline_hadamard_f16;
+                case GGML_TYPE_BF16:
+                    return ctx->device->pipeline_hadamard_bf16;
+                default:
+                    return nullptr;
+            }
+        }
+        return nullptr;
     case GGML_OP_SQR:
         if (src0->type == dst->type &&
             (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16)) {
@@ -9582,6 +9600,19 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
     case GGML_OP_SUM_ROWS:
     case GGML_OP_CUMSUM:
     case GGML_OP_MEAN:
+    case GGML_OP_HADAMARD:
+        // one workgroup per row: the row index is gl_WorkGroupID.x
+        // (shader: row = z*262144 + y*512 + x), rows spread over x/y/z
+        {
+            const uint32_t nr = ggml_nrows(src0);
+            if (nr > 262144) {
+                elements = { 512, 512, CEIL_DIV(nr, 262144) };
+            } else if (nr > 512) {
+                elements = { 512, CEIL_DIV(nr, 512), 1 };
+            } else {
+                elements = { nr, 1, 1 };
+            }
+        } break;
     case GGML_OP_ARGMAX:
         {
             const uint32_t nr = ggml_nrows(src0);
@@ -10636,6 +10667,29 @@ void ggml_vk_scale(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml
     p.param2 = ggml_get_op_params_f32(dst, 1);
 
     ggml_vk_op_f32(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_SCALE, std::move(p));
+}
+
+void ggml_vk_hadamard(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {
+    GGML_ASSERT(src0->type == dst->type);
+    GGML_ASSERT(ggml_is_contiguous(src0) && ggml_is_contiguous(dst));
+
+    vk_op_unary_push_constants p = vk_op_unary_push_constants_init(src0, dst);
+    vk_pipeline pipeline;
+    switch (src0->type) {
+        case GGML_TYPE_F32:
+            pipeline = ctx->device->pipeline_hadamard_f32;
+            break;
+        case GGML_TYPE_F16:
+            pipeline = ctx->device->pipeline_hadamard_f16;
+            break;
+        case GGML_TYPE_BF16:
+            pipeline = ctx->device->pipeline_hadamard_bf16;
+            break;
+        default:
+            GGML_ABORT("hadamard: unsupported type %d", src0->type);
+    }
+
+    ggml_vk_op_f32(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_HADAMARD, std::move(p), pipeline);
 }
 
 void ggml_vk_sqr(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {
@@ -12583,6 +12637,10 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
         } else {
             ggml_vk_scale(ctx, compute_ctx, src0, node);
         }
+
+        break;
+    case GGML_OP_HADAMARD:
+        ggml_vk_hadamard(ctx, compute_ctx, src0, node);
 
         break;
     case GGML_OP_SQR:
@@ -15930,6 +15988,10 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             return op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16;
         case GGML_OP_SCALE:
             return ggml_is_contiguous(op->src[0]) && op->src[0]->type == GGML_TYPE_F32;
+        case GGML_OP_HADAMARD:
+            return op->type == op->src[0]->type && ggml_is_contiguous(op->src[0]) &&
+                   (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_BF16) &&
+                   (op->src[0]->ne[0] & (op->src[0]->ne[0] - 1)) == 0 && op->src[0]->ne[0] <= 8192;
         case GGML_OP_PAD:
         case GGML_OP_PAD_REFLECT_1D:
         case GGML_OP_ROLL:
