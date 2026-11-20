@@ -191,6 +191,17 @@ typedef struct {
 } block_q2_0;
 static_assert(sizeof(block_q2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong q2_0 block size/padding");
 
+#define QK2_25 64
+typedef struct {
+    ggml_half d;             // delta (scale), fp16
+    uint8_t qs[24];          // 64 x 3-bit indices (8 weights packed in 3 bytes)
+    uint8_t qzero;           // zero point, 0..7
+    uint8_t pad[5];          // выравнивание до 32 байт: stride строки (8 блоков
+                             // × 32 = 256) кратен размеру блока — иначе
+                             // нецелый stride в блоках ломает CUDA-деквант
+} block_q2_25;               // 32 bytes / 64 weights = 4.0 bpw stored
+static_assert(sizeof(block_q2_25) == 32, "wrong q2_25 block size/padding");
+
 #define QK4_0 32
 typedef struct {
     ggml_half d;           // delta

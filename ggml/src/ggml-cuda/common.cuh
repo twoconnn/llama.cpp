@@ -998,6 +998,14 @@ struct ggml_cuda_type_traits<GGML_TYPE_Q2_0> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_Q2_25> {
+    static constexpr int qk = QK2_25;
+    static constexpr int qr = QR2_0;   // 2 sub-blocks of 32, как Q2_0 (group 64)
+    static constexpr int qi = QI2_0;   // = 2: vec_dot вызывается с iqs ∈ {0,1}
+    static constexpr int bs = sizeof(block_q2_25);  // 28 байт, не block_q2_0!
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_0> {
     static constexpr int qk = QK4_0;
     static constexpr int qr = QR4_0;

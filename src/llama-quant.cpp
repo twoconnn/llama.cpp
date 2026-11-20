@@ -781,6 +781,18 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, const llama_mod
     ggml_type new_type = default_type;
 
     // get more optimal quantization type based on the tensor shape, layer, etc.
+    // override из tensor_types должен работать и для НЕ-quantized default
+    // (например BF16-упаковка с выборочными Q2_25-экспертами)
+    if (!qs.tensor_type_patterns.empty()) {
+        const std::string tensor_name(tensor->name);
+        for (const auto & [pattern, qtype] : qs.tensor_type_patterns) {
+            if (std::regex_search(tensor_name, pattern)) {
+                return qtype;  // явное указание — приоритет над всем
+            }
+        }
+    }
+
+    // get more optimal quantization type based on the tensor shape, layer, etc.
     if (ggml_is_quantized(default_type)) {
         // if the user provided tensor types - use those
         bool manual = false;
@@ -929,6 +941,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_ALL_F32:     return GGML_TYPE_F32;
         case LLAMA_FTYPE_MOSTLY_Q1_0: return GGML_TYPE_Q1_0;
         case LLAMA_FTYPE_MOSTLY_Q2_0: return GGML_TYPE_Q2_0;
+        case LLAMA_FTYPE_MOSTLY_Q2_25: return GGML_TYPE_Q2_25;
 
         case LLAMA_FTYPE_MOSTLY_MXFP4_MOE: return GGML_TYPE_MXFP4;
 

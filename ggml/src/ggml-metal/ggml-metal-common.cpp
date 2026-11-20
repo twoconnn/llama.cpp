@@ -84,6 +84,7 @@ static bool ggml_metal_mul_mv_mma_type_supported(enum ggml_type type) {
         case GGML_TYPE_BF16:
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_Q2_25:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
@@ -128,6 +129,7 @@ static int64_t ggml_metal_mul_mv_mma_rows_min(enum ggml_type type) {
             return 4;
         case GGML_TYPE_F16:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_Q2_25:
         case GGML_TYPE_Q4_K:
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:

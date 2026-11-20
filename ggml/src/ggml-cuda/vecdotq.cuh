@@ -112,6 +112,9 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
 #define VDR_Q2_0_Q8_1_MMVQ 1  // Process one 32-element chunk at a time for parallelism
 #define VDR_Q2_0_Q8_1_MMQ  2  // Q2_0 group 64: 128 bits (4 ints) per block, 2 32-element chunks
 
+#define VDR_Q2_25_Q8_1_MMVQ 1  // Q2_25: 3-bit indices, group 64, one 32-chunk at a time
+#define VDR_Q2_25_Q8_1_MMQ  2
+
 #define VDR_Q4_0_Q8_1_MMVQ 2
 #define VDR_Q4_0_Q8_1_MMQ  4
 
@@ -793,6 +796,49 @@ static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
     }
 
     // Apply Q2_0's single scale and this chunk's Q8_1 scale
+    const float d8 = __low2float(bq8_1_chunk->ds);
+    return d2 * d8 * sumi;
+}
+
+// Q2_25: 3-bit indices, group 64, asymmetric affine (d, qzero 0..7).
+// Декванты как dequantize_q2_25: v = (q - zero) * d.
+static __device__ __forceinline__ float vec_dot_q2_25_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_q2_25 * bq2_25 = (const block_q2_25 *) vbq + kbx;
+
+    const float d2   = __half2float(bq2_25->d);
+    const int   zero = bq2_25->qzero;
+    const uint8_t * qs = bq2_25->qs;
+
+    // iqs выбирает чанк из 32 элементов (0 или 1) внутри блока из 64
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
+
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        // 4 элемента на итерацию: e = iqs*32 + j*4 .. +3 (dp4a по 4 байтам)
+        const int e = iqs * 32 + j * 4;
+
+        // 3-битные индексы: 4 элемента = 12 бит, читаем 2-3 байта
+        const int byte0 = (e * 3) / 8;
+        const uint32_t w = (uint32_t) qs[byte0]
+                         | ((uint32_t) qs[byte0 + 1] << 8)
+                         | ((uint32_t) qs[byte0 + 2] << 16);
+        const int shift = (e * 3) % 8;
+
+        const int q0 = (int) ((w >> (shift +  0)) & 0x07) - zero;
+        const int q1 = (int) ((w >> (shift +  3)) & 0x07) - zero;
+        const int q2 = (int) ((w >> (shift +  6)) & 0x07) - zero;
+        const int q3 = (int) ((w >> (shift +  9)) & 0x07) - zero;
+
+        const int u = get_int_b4(bq8_1_chunk->qs, j);
+
+        // q0..q3 ∈ [-7, 7] — влезают в байты (2's complement)
+        const int qpack = (q0 & 0xFF) | ((q1 & 0xFF) << 8) | ((q2 & 0xFF) << 16) | ((q3 & 0xFF) << 24);
+        sumi = ggml_cuda_dp4a(qpack, u, sumi);
+    }
+
     const float d8 = __low2float(bq8_1_chunk->ds);
     return d2 * d8 * sumi;
 }

@@ -4464,6 +4464,7 @@ static bool ggml_sycl_supports_mmvq_id(enum ggml_type type) {
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_Q2_25:
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q4_K:
