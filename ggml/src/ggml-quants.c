@@ -188,6 +188,78 @@ void quantize_row_q2_25_ref(const float * GGML_RESTRICT x, block_q2_25 * GGML_RE
     }
 }
 
+void quantize_row_q2_25g128_ref(const float * GGML_RESTRICT x, block_q2_25g128 * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK2_25G128;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        // Веса QAT лежат на сетке (q - z_qat) * d_qat (group 128).
+        float amax = 0.0f;
+        float wmin = INFINITY, wmax = -INFINITY;
+        for (int j = 0; j < qk; ++j) {
+            const float a = fabsf(x[i*qk + j]);
+            if (a > amax) amax = a;
+            if (x[i*qk + j] < wmin) wmin = x[i*qk + j];
+            if (x[i*qk + j] > wmax) wmax = x[i*qk + j];
+        }
+        float d_qat = (wmax - wmin) / 7.0f;
+        int z_qat = d_qat > 0.0f ? (int) roundf(-wmin / d_qat) : 0;
+        if (z_qat < 0) z_qat = 0;
+        if (z_qat > 7) z_qat = 7;
+        float best_err = INFINITY;
+        float best_scale = 0.0f;
+        int best_zero = 0;
+        for (int z = 0; z <= 7; ++z) {
+            int max_dist = 0;
+            for (int d = 0; d <= 7; ++d) {
+                int dist = d > z ? d - z : z - d;
+                if (dist > max_dist) max_dist = dist;
+            }
+            if (max_dist == 0) continue;
+            const float cands[5] = { d_qat, amax / max_dist, amax / 7.0f,
+                                     (amax / max_dist) * 0.5f, (amax / 7.0f) * 0.5f };
+            for (int ci = 0; ci < 5; ++ci) {
+                const float scale_c = cands[ci];
+                if (scale_c <= 0.0f) continue;
+                const float isc = 1.0f / scale_c;
+                float err = 0.0f;
+                for (int j = 0; j < qk; ++j) {
+                    int q = (int) roundf(x[i*qk + j] * isc) + z;
+                    if (q < 0) q = 0;
+                    if (q > 7) q = 7;
+                    const float deq = (q - z) * scale_c;
+                    err += (deq - x[i*qk + j]) * (deq - x[i*qk + j]);
+                }
+                if (err < best_err) {
+                    best_err = err;
+                    best_scale = scale_c;
+                    best_zero = z;
+                }
+            }
+        }
+        y[i].qzero = (uint8_t) best_zero;
+        y[i].d = GGML_FP32_TO_FP16(best_scale);
+        const float scale = GGML_FP16_TO_FP32(y[i].d);
+        const float is = scale > 0.0f ? 1.0f / scale : 0.0f;
+
+        for (int j = 0; j < qk / 8; ++j) {
+            uint32_t v = 0;
+            for (int b = 0; b < 8; ++b) {
+                int q = (int) roundf(x[i*qk + j*8 + b] * is) + best_zero;
+                if (q < 0) q = 0;
+                if (q > 7) q = 7;
+                v |= ((uint32_t) q) << (b * 3);
+            }
+            y[i].qs[j*3 + 0] = (uint8_t) (v & 0xFF);
+            y[i].qs[j*3 + 1] = (uint8_t) ((v >> 8) & 0xFF);
+            y[i].qs[j*3 + 2] = (uint8_t) ((v >> 16) & 0xFF);
+        }
+    }
+}
+
 // reference implementation for deterministic creation of model files
 void quantize_row_q4_0_ref(const float * GGML_RESTRICT x, block_q4_0 * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK4_0;
@@ -537,6 +609,29 @@ void dequantize_row_q2_0(const block_q2_0 * GGML_RESTRICT x, float * GGML_RESTRI
 
 void dequantize_row_q2_25(const block_q2_25 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK2_25;
+
+    assert(k % qk == 0);
+
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        const int zero = x[i].qzero;
+
+        for (int j = 0; j < qk; ++j) {
+            const int byte_index = (j / 8) * 3;
+            const int bit_index = (j % 8) * 3;
+            const uint32_t v = (uint32_t) x[i].qs[byte_index]
+                             | ((uint32_t) x[i].qs[byte_index + 1] << 8)
+                             | ((uint32_t) x[i].qs[byte_index + 2] << 16);
+            const int q = (int) ((v >> bit_index) & 0x07);
+            y[i*qk + j] = (q - zero) * d;
+        }
+    }
+}
+
+void dequantize_row_q2_25g128(const block_q2_25g128 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK2_25G128;
 
     assert(k % qk == 0);
 
@@ -2233,6 +2328,11 @@ size_t quantize_q2_25(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
     // значения в блок q2_25. quant_weights (imatrix) игнорируем — сетка фиксирована.
     quantize_row_q2_25_ref(src, dst, (int64_t)nrow*n_per_row);
     return nrow * ggml_row_size(GGML_TYPE_Q2_25, n_per_row);
+}
+
+size_t quantize_q2_25g128(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    quantize_row_q2_25g128_ref(src, dst, (int64_t)nrow*n_per_row);
+    return nrow * ggml_row_size(GGML_TYPE_Q2_25G128, n_per_row);
 }
 
 size_t quantize_q4_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {

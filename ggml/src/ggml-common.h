@@ -202,6 +202,17 @@ typedef struct {
 } block_q2_25;               // 32 bytes / 64 weights = 4.0 bpw stored
 static_assert(sizeof(block_q2_25) == 32, "wrong q2_25 block size/padding");
 
+#define QK2_25G128 128
+typedef struct {
+    ggml_half d;             // delta (scale), fp16 — общий на 128 весов
+    uint8_t qs[48];          // 128 x 3-bit indices (8 весов в 3 байтах)
+    uint8_t qzero;           // zero point, 0..7
+    uint8_t pad[5];          // выравнивание до 56 байт: stride строки
+                             // (ne00/128 блоков × 56) кратен 56 при
+                             // ne00 % 128 == 0 (наши размеры кратны)
+} block_q2_25g128;           // 56 bytes / 128 weights = 3.5 bpw stored
+static_assert(sizeof(block_q2_25g128) == 56, "wrong q2_25g128 block size/padding");
+
 #define QK4_0 32
 typedef struct {
     ggml_half d;           // delta

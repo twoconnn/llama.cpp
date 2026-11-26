@@ -74,6 +74,35 @@ static __device__ __forceinline__ void dequantize_q2_25(const void * vx, const i
     v.y = (q1 - zero) * d;
 }
 
+static __device__ __forceinline__ void dequantize_q2_25g128(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q2_25g128 * x = (const block_q2_25g128 *) vx;
+
+    const float d = __half2float(x[ib].d);
+    const int zero = x[ib].qzero;
+
+    // qr=2: v.x = элемент iqs (0..63), v.y = элемент iqs+64 — разнесённые половины.
+    const int e0 = iqs;
+    const int e1 = iqs + 64;
+
+    const int byte0 = (e0 * 3) / 8;
+    const int bit0  = (e0 * 3) % 8;
+    const int byte1 = (e1 * 3) / 8;
+    const int bit1  = (e1 * 3) % 8;
+
+    const uint32_t w0 = (uint32_t) x[ib].qs[byte0]
+                      | ((uint32_t) x[ib].qs[byte0 + 1] << 8)
+                      | ((uint32_t) x[ib].qs[byte0 + 2] << 16);
+    const uint32_t w1 = (uint32_t) x[ib].qs[byte1]
+                      | ((uint32_t) x[ib].qs[byte1 + 1] << 8)
+                      | ((uint32_t) x[ib].qs[byte1 + 2] << 16);
+
+    const int q0 = (int) ((w0 >> bit0) & 0x07);
+    const int q1 = (int) ((w1 >> bit1) & 0x07);
+
+    v.x = (q0 - zero) * d;
+    v.y = (q1 - zero) * d;
+}
+
 static __device__ __forceinline__ void dequantize_q4_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q4_0 * x = (const block_q4_0 *) vx;
 

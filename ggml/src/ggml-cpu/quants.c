@@ -34,6 +34,10 @@ void quantize_row_q2_25(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, i
     quantize_row_q2_25_ref(x, y, k);
 }
 
+void quantize_row_q2_25g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_q2_25g128_ref(x, (block_q2_25g128 *) y, k);
+}
+
 void quantize_row_q4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
     quantize_row_q4_0_ref(x, y, k);
 }
@@ -277,6 +281,57 @@ void ggml_vec_dot_q2_25_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, 
 
     *s = sumf;
 }
+
+void ggml_vec_dot_q2_25g128_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    const int qk = QK2_25G128;
+    const int nb = n / qk;
+
+    assert(n % qk == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q2_25g128 * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+
+    float sumf = 0.0f;
+
+    for (int i = 0; i < nb; i++) {
+        const float d0 = GGML_CPU_FP16_TO_FP32(x[i].d);
+        const int zero = x[i].qzero;
+
+        float sumi = 0.0f;
+
+        // group 128: один блок q2_25g128 (128 весов) = 4 блока Q8_0
+        for (int k = 0; k < 4; k++) {
+            const block_q8_0 * GGML_RESTRICT yb = &y[i * 4 + k];
+            const float d1 = GGML_CPU_FP16_TO_FP32(yb->d);
+            int sumi_block = 0;
+
+            const uint8_t * GGML_RESTRICT qs = &x[i].qs[k * 12];
+            const int8_t  * GGML_RESTRICT qy = yb->qs;
+
+            for (int b = 0; b < 32; ++b) {
+                const int bit_off = b * 3;
+                const uint32_t v = (uint32_t) qs[bit_off / 8]
+                                 | ((uint32_t) qs[bit_off / 8 + 1] << 8)
+                                 | ((uint32_t) qs[bit_off / 8 + 2] << 16)
+                                 | ((uint32_t) qs[bit_off / 8 + 3] << 24);
+                const int q = (int) ((v >> (bit_off % 8)) & 0x07) - zero;
+                sumi_block += q * qy[b];
+            }
+
+            sumi += d1 * sumi_block;
+        }
+
+        sumf += d0 * sumi;
+    }
+
+    *s = sumf;
+}
+
 void ggml_vec_dot_q4_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK8_0;
     const int nb = n / qk;
