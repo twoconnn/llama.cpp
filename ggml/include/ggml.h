@@ -432,7 +432,8 @@ extern "C" {
         GGML_TYPE_Q2_0    = 42,
         GGML_TYPE_Q2_25   = 43, // QAT 2.25-bit grid: 3-bit indices, group 64, asymmetric affine
         GGML_TYPE_Q2_25G128 = 44, // QAT 2.25-bit grid, group 128 (блок 56Б: 128 весов)
-        GGML_TYPE_COUNT   = 45,
+        GGML_TYPE_Q2B256    = 45, // QAT 2.0-bit grid, group 256 (блок 72Б: 256 весов)
+        GGML_TYPE_COUNT   = 46,
     };
 
     // [TAG_GGML_PREC]

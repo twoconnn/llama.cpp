@@ -103,6 +103,26 @@ static __device__ __forceinline__ void dequantize_q2_25g128(const void * vx, con
     v.y = (q1 - zero) * d;
 }
 
+static __device__ __forceinline__ void dequantize_q2b256(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_q2b256 * x = (const block_q2b256 *) vx;
+
+    const float d = __half2float(x[ib].d);
+    const int zero = x[ib].qzero;
+
+    // qr=2: v.x = элемент iqs (0..127), v.y = элемент iqs+128 — разнесённые половины.
+    const int e0 = iqs;
+    const int e1 = iqs + 128;
+
+    const uint8_t b0 = x[ib].qs[e0 / 4];
+    const uint8_t b1 = x[ib].qs[e1 / 4];
+
+    const int q0 = (int) ((b0 >> ((e0 % 4) * 2)) & 0x03);
+    const int q1 = (int) ((b1 >> ((e1 % 4) * 2)) & 0x03);
+
+    v.x = (q0 - zero) * d;
+    v.y = (q1 - zero) * d;
+}
+
 static __device__ __forceinline__ void dequantize_q4_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q4_0 * x = (const block_q4_0 *) vx;
 

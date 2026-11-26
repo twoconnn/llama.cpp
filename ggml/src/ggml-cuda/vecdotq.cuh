@@ -118,6 +118,9 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
 #define VDR_Q2_25G128_Q8_1_MMVQ 1  // group 128: 4 чанка Q8_1 на блок, по одному за вызов
 #define VDR_Q2_25G128_Q8_1_MMQ  2
 
+#define VDR_Q2B256_Q8_1_MMVQ 1  // group 256: 8 чанков Q8_1 на блок, по одному за вызов
+#define VDR_Q2B256_Q8_1_MMQ  2
+
 #define VDR_Q4_0_Q8_1_MMVQ 2
 #define VDR_Q4_0_Q8_1_MMQ  4
 
@@ -874,6 +877,41 @@ static __device__ __forceinline__ float vec_dot_q2_25g128_q8_1(
         const int q1 = (int) ((w >> (shift +  3)) & 0x07) - zero;
         const int q2 = (int) ((w >> (shift +  6)) & 0x07) - zero;
         const int q3 = (int) ((w >> (shift +  9)) & 0x07) - zero;
+
+        const int u = get_int_b4(bq8_1_chunk->qs, j);
+
+        const int qpack = (q0 & 0xFF) | ((q1 & 0xFF) << 8) | ((q2 & 0xFF) << 16) | ((q3 & 0xFF) << 24);
+        sumi = ggml_cuda_dp4a(qpack, u, sumi);
+    }
+
+    const float d8 = __low2float(bq8_1_chunk->ds);
+    return d2 * d8 * sumi;
+}
+
+// Q2B256: группа 256, блок 72Б, 2-бит индексы (qmax=3). Один блок = 8 чанков Q8_1.
+// iqs ∈ {0..7}. 4 веса в байте: b-й байт окна = 4 индекса, dp4a напрямую!
+static __device__ __forceinline__ float vec_dot_q2b256_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_q2b256 * bq = (const block_q2b256 *) vbq + kbx;
+
+    const float d2   = __half2float(bq->d);
+    const int   zero = bq->qzero;
+    const uint8_t * qs = bq->qs;
+
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
+
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        // 4 элемента на итерацию: e = iqs*32 + j*4; байт qs[e/4] = 4 индекса (2 бита)
+        const int e = iqs * 32 + j * 4;
+        const uint8_t byte = qs[e / 4];
+
+        const int q0 = (int) ((byte >> 0) & 0x03) - zero;
+        const int q1 = (int) ((byte >> 2) & 0x03) - zero;
+        const int q2 = (int) ((byte >> 4) & 0x03) - zero;
+        const int q3 = (int) ((byte >> 6) & 0x03) - zero;
 
         const int u = get_int_b4(bq8_1_chunk->qs, j);
 
